@@ -1,11 +1,22 @@
-"""光动力早期试验的基础运行入口。"""
+"""光动力早期试验运行入口。
+
+除原有的 /health 外，通过 trial.api 暴露受控流程命令接口：
+POST /api/commands/<命令> 与 GET /api/<资源>。
+"""
 
 import argparse
-import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
+
+from trial.api import Api, make_handler
+from trial.coordinator import TrialCoordinator
+from trial.store import EventStore
 
 SERVICE_ID = "photodynamic-trial"
 SERVICE_NAME = "光动力早期试验"
+
+# 进程级共享存储（ThreadingHTTPServer 下所有请求共用，存储自身带锁）。
+api = Api(TrialCoordinator(EventStore()))
+Handler = make_handler(api)
 
 
 def health_payload():
@@ -13,22 +24,8 @@ def health_payload():
     return {"status": "ok", "service": SERVICE_ID, "name": SERVICE_NAME}
 
 
-class Handler(BaseHTTPRequestHandler):
-    """提供健康检查，供本地联调和运维巡检使用。"""
-
-    def do_GET(self):
-        if self.path != "/health":
-            self.send_error(404)
-            return
-        body = json.dumps(health_payload(), ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_args):
-        return
+def build_server(port):
+    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(api))
 
 
 def main():
@@ -38,9 +35,11 @@ def main():
     args = parser.parse_args()
     if args.check:
         assert health_payload()["service"] == SERVICE_ID
+        # 领域引擎冒烟：空存储下查询应可用
+        assert Api().dispatch_get("subjects", {}) == []
         print("基础检查通过")
         return
-    ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+    build_server(args.port).serve_forever()
 
 
 if __name__ == "__main__":
